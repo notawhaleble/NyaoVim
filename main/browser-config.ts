@@ -3,6 +3,7 @@ import {readFileSync} from 'fs';
 import {app} from 'electron';
 import extend = require('deep-extend');
 import windowStateKeeper = require('electron-window-state');
+import {nyaoGlobal} from './global-state';
 
 export interface BrowserConfigJson {
     remember_window_state: boolean;
@@ -46,7 +47,7 @@ export default class BrowserConfig {
             const s = windowStateKeeper({
                 defaultWidth: 1000,
                 defaultHeight: 800,
-                path: global.config_dir_path,
+                path: nyaoGlobal.config_dir_path,
             });
             if (typeof s.x === 'number') {
                 opt.x = s.x;
@@ -88,7 +89,12 @@ export default class BrowserConfig {
         if (this.loaded_config === null || !this.loaded_config.single_instance) {
             return false;
         }
-        return app.makeSingleInstance((argv, cwd) => {
+        const hasLock = app.requestSingleInstanceLock();
+        if (!hasLock) {
+            return true;
+        }
+
+        app.on('second-instance', (_event, argv, cwd) => {
             if (win.isMinimized()) {
                 win.restore();
             }
@@ -102,7 +108,8 @@ export default class BrowserConfig {
                     'args ' + args.join(' '),
                 ]);
             }
-            return true;
         });
+
+        return false;
     }
 }
