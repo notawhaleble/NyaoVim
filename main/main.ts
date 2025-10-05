@@ -107,6 +107,7 @@ function startMainWindow() {
             blinkFeatures: 'KeyboardEventKey,Accelerated2dCanvas,Canvas2dFixedRenderingMode',
             contextIsolation: false,
             nodeIntegration: true,
+            webviewTag: true,
         },
         icon: nativeImage.createFromPath(join(__dirname, '..', 'resources', 'icon', 'nyaovim-logo.png')),
     } as Electron.BrowserWindowConstructorOptions;
