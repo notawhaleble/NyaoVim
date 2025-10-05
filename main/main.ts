@@ -4,6 +4,10 @@ import {app, BrowserWindow, shell, nativeImage} from 'electron';
 import {sync as mkdirpSync} from 'mkdirp';
 import setMenu from './menu';
 import BrowserConfig from './browser-config';
+import {nyaoGlobal} from './global-state';
+import {initialize as initializeRemote, enable as enableRemote} from '@electron/remote/main';
+
+initializeRemote();
 
 if (process.argv.indexOf('--help') !== -1) {
     console.log(`OVERVIEW: NyaoVim; Web-enhanced Extensible Neovim Frontend
@@ -39,8 +43,8 @@ const config_dir_name =
             app.getPath('appData') :
             process.env.XDG_CONFIG_HOME || join(process.env.HOME, '.config');
 
-global.config_dir_path = join(config_dir_name, 'nyaovim');
-global.nyaovimrc_path = join(global.config_dir_path, 'nyaovimrc.html');
+nyaoGlobal.config_dir_path = join(config_dir_name, 'nyaovim');
+nyaoGlobal.nyaovimrc_path = join(nyaoGlobal.config_dir_path, 'nyaovimrc.html');
 
 function exists(path: string) {
     return new Promise<boolean>(resolve => {
@@ -55,11 +59,11 @@ function exists(path: string) {
 }
 
 function prepareDefaultNyaovimrc() {
-    console.log('Generate default nyaovimrc at ' + global.nyaovimrc_path);
+    console.log('Generate default nyaovimrc at ' + nyaoGlobal.nyaovimrc_path);
 
-    return exists(global.config_dir_path).then(e => {
+    return exists(nyaoGlobal.config_dir_path).then(e => {
         if (!e) {
-            mkdirpSync(global.config_dir_path);
+            mkdirpSync(nyaoGlobal.config_dir_path);
         }
     }).then(() => {
         const contents =
@@ -74,11 +78,11 @@ function prepareDefaultNyaovimrc() {
   </template>
 </dom-module>
 `;
-        writeFileSync(global.nyaovimrc_path, contents, 'utf8');
+        writeFileSync(nyaoGlobal.nyaovimrc_path, contents, 'utf8');
     });
 }
 
-const ensure_nyaovimrc = exists(global.nyaovimrc_path).then((e: boolean) => {
+const ensure_nyaovimrc = exists(nyaoGlobal.nyaovimrc_path).then((e: boolean) => {
     if (!e) {
         return prepareDefaultNyaovimrc();
     } else {
@@ -89,7 +93,7 @@ const ensure_nyaovimrc = exists(global.nyaovimrc_path).then((e: boolean) => {
 
 const browser_config = new BrowserConfig();
 const prepare_browser_config
-    = browser_config.loadFrom(global.config_dir_path)
+    = browser_config.loadFrom(nyaoGlobal.config_dir_path)
         .catch(err => console.error(err));
 
 function startMainWindow() {
@@ -101,6 +105,8 @@ function startMainWindow() {
         useContentSize: true,
         webPreferences: {
             blinkFeatures: 'KeyboardEventKey,Accelerated2dCanvas,Canvas2dFixedRenderingMode',
+            contextIsolation: false,
+            nodeIntegration: true,
         },
         icon: nativeImage.createFromPath(join(__dirname, '..', 'resources', 'icon', 'nyaovim-logo.png')),
     } as Electron.BrowserWindowConstructorOptions;
@@ -108,6 +114,7 @@ function startMainWindow() {
     const user_config = browser_config.applyToOptions(default_config);
 
     let win = new BrowserWindow(user_config);
+    enableRemote(win.webContents);
 
     const already_exists = browser_config.configSingletonWindow(win);
     if (already_exists) {
@@ -154,6 +161,10 @@ app.once(
             // XXX:
             // app.dock.setIcon() is not defined in github-electron.d.ts yet.
             (app.dock as any).setIcon(join(__dirname, '..', 'resources', 'icon', 'nyaovim-logo.png'));
+        }
+
+        if (typeof (app as any).configureHostResolver === 'function') {
+            (app as any).configureHostResolver({secureDnsMode: 'off'});
         }
 
         Promise.all([

@@ -17,6 +17,7 @@
     "browser-config.ts",
     "menu.ts",
     "main.ts",
+    "global-state.ts",
     "lib.d.ts"
   ]
 }
