@@ -39,3 +39,42 @@ endfunction
 function! nyaovim#browser_window(method, args) abort
     call rpcnotify(0, 'nyaovim:browser-window', a:method, a:args)
 endfunction
+
+function! nyaovim#clipboard_copy(lines, regtype) abort
+    let l:channel = get(g:, 'nyaovim_clipboard_channel', 0)
+    if l:channel > 0
+        call rpcnotify(l:channel, 'nyaovim-clipboard-put', a:lines, a:regtype)
+    endif
+endfunction
+
+function! nyaovim#clipboard_paste() abort
+    let l:channel = get(g:, 'nyaovim_clipboard_channel', 0)
+    if l:channel > 0
+        return rpcrequest(l:channel, 'nyaovim-clipboard-get')
+    endif
+    return [[], '']
+endfunction
+
+function! nyaovim#setup_clipboard() abort
+    let l:channel = get(g:, 'nyaovim_clipboard_channel', 0)
+    if l:channel <= 0
+        return
+    endif
+
+    if exists('g:clipboard') && has_key(g:clipboard, 'name') && g:clipboard.name ==# 'nyaovim-electron'
+        return
+    endif
+
+    let g:clipboard = {
+          \ 'name': 'nyaovim-electron',
+          \ 'copy': {
+          \   '+': function('nyaovim#clipboard_copy'),
+          \   '*': function('nyaovim#clipboard_copy'),
+          \ },
+          \ 'paste': {
+          \   '+': function('nyaovim#clipboard_paste'),
+          \   '*': function('nyaovim#clipboard_paste'),
+          \ },
+          \ 'cache_enabled': 0,
+          \ }
+endfunction

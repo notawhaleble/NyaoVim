@@ -285,7 +285,20 @@ class NyaoVimApp extends Polymer.Element {
         editor.on('process-attached', () => {
             const client = editor.getClient();
         let lastClipboardType: string = 'v';
+        let clipboardChannelId = 0;
 
+
+            client.getApiInfo()
+                  .then(([channelId]) => {
+                      clipboardChannelId = typeof channelId === 'number' ? channelId : 0;
+                      if (clipboardChannelId > 0) {
+                          return client.setVar('nyaovim_clipboard_channel', clipboardChannelId)
+                              .then((): Promise<void> => client.command('call nyaovim#setup_clipboard()'))
+                              .catch((): undefined => undefined);
+                      }
+                      return undefined;
+                  })
+                  .catch(() => { clipboardChannelId = 0; });
 
             client.listRuntimePaths()
                   .then((rtp: string[]) => {
