@@ -1,12 +1,12 @@
-if (process.env.PATH.indexOf('/usr/local/bin') === -1 && process.platform !== 'win32') {
-    // Note:
-    // This solves the problem that $PATH is not set up when app is
-    // started via clicking NyaoVim.app.
-    //
-    // XXX:
-    // This is just a workaround.
-    // If nvim is installed to other directory, we can't know that.
-    process.env.PATH += ':/usr/local/bin';
+if (process.platform !== 'win32') {
+    const lifeSupport = ['/usr/local/bin', '/opt/homebrew/bin'];
+    const currentPath = process.env.PATH || '';
+    const additions = lifeSupport.filter(p => currentPath.indexOf(p) === -1);
+
+    if (additions.length !== 0) {
+        const separator = currentPath.length === 0 ? '' : ':';
+        process.env.PATH = currentPath + separator + additions.join(':');
+    }
 }
 
 // Note:

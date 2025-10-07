@@ -36,7 +36,7 @@ function pack-app() {
 
     electron-packager ./app --platform=darwin --arch=x64 "--app-copyright=copyright (c) 2017 rhysd" --app-version="$version" --build-version="$version" --icon=./resources/icon/nyaovim-logo.icns --electron-version="$electron_version" --extend-info=./resources/osx_plist/file_associations.plist --app-bundle-id=io.github.rhysd.nyaovim
     electron-packager ./app --platform=linux --arch=all "--app-copyright=copyright (c) 2017 rhysd" --app-version="$version" --build-version="$version" --icon=./resources/icon/nyaovim-logo.ico --electron-version="$electron_version"
-    electron-packager ./app --platform=win32 --arch=all "--app-copyright=copyright (c) 2017 rhysd" --app-version="$version" --build-version="$version" --icon=./resources/icon/nyaovim-logo.ico --electron-version="$electron_version" --version-string="$version"
+    #electron-packager ./app --platform=win32 --arch=all "--app-copyright=copyright (c) 2017 rhysd" --app-version="$version" --build-version="$version" --icon=./resources/icon/nyaovim-logo.ico --electron-version="$electron_version" --version-string="$version"
 }
 
 function make-dist() {

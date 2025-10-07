@@ -8,4 +8,3 @@ npm-debug.log
 /renderer/**/*.js.map
 /test/**/*.js
 /app
-/dist
