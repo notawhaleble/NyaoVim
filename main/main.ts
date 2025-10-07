@@ -9,6 +9,10 @@ import {initialize as initializeRemote, enable as enableRemote} from '@electron/
 
 initializeRemote();
 
+if (!process.env.NODE_ENV) {
+    process.env.NODE_ENV = app.isPackaged ? 'production' : 'development';
+}
+
 if (process.argv.indexOf('--help') !== -1) {
     console.log(`OVERVIEW: NyaoVim; Web-enhanced Extensible Neovim Frontend
 
