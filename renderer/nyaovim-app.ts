@@ -1,5 +1,5 @@
 import {NeovimElement, Neovim} from 'neovim-component';
-import {shell, ipcRenderer as ipc} from 'electron';
+import {shell, ipcRenderer as ipc, clipboard} from 'electron';
 import remote = require('@electron/remote');
 import {join, basename} from 'path';
 import {readdirSync} from 'fs';
@@ -284,6 +284,8 @@ class NyaoVimApp extends Polymer.Element {
 
         editor.on('process-attached', () => {
             const client = editor.getClient();
+        let lastClipboardType: string = 'v';
+
 
             client.listRuntimePaths()
                   .then((rtp: string[]) => {
@@ -292,6 +294,25 @@ class NyaoVimApp extends Polymer.Element {
                   });
 
             runtime_api.subscribe(client);
+
+            client.on('request', (method: string, args: RPCValue[], resp: any) => {
+                if (method === 'nyaovim-clipboard-put') {
+                    const [lines, regtype] = args as [string[], string];
+                    clipboard.writeText((lines || []).join('\n'));
+                    lastClipboardType = typeof regtype === 'string' && regtype.length !== 0 ? regtype : 'v';
+                    resp.send(true);
+                    return;
+                }
+
+                if (method === 'nyaovim-clipboard-get') {
+                    const text = clipboard.readText();
+                    const lines = text.length === 0 ? [] : text.split(/\r?\n/);
+                    resp.send([lines, lastClipboardType]);
+                    return;
+                }
+
+                resp.send(null);
+            });
 
             element.addEventListener('drop', e => {
                 e.preventDefault();
