@@ -43,7 +43,7 @@ endfunction
 function! nyaovim#clipboard_copy(lines, regtype) abort
     let l:channel = get(g:, 'nyaovim_clipboard_channel', 0)
     if l:channel > 0
-        call rpcnotify(l:channel, 'nyaovim-clipboard-put', a:lines, a:regtype)
+        call rpcrequest(l:channel, 'nyaovim-clipboard-put', a:lines, a:regtype)
     endif
 endfunction
 
