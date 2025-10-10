@@ -8,6 +8,21 @@ import {nyaoGlobal} from './global-state';
 import {initialize as initializeRemote, enable as enableRemote} from '@electron/remote/main';
 
 initializeRemote();
+const GPU_SWITCHES: Array<[string, string | undefined]> = [
+    ['enable-gpu-rasterization', undefined],
+    ['enable-zero-copy', undefined],
+    ['enable-oop-rasterization', undefined],
+    ['enable-accelerated-2d-canvas', undefined],
+    ['enable-features', 'CanvasOopRasterization,Canvas2DLayers,UseSkiaRenderer'],
+    ['use-gl', 'desktop'],
+];
+GPU_SWITCHES.forEach(([name, value]) => {
+    if (value !== undefined) {
+        app.commandLine.appendSwitch(name, value);
+    } else {
+        app.commandLine.appendSwitch(name);
+    }
+});
 
 if (!process.env.NODE_ENV) {
     process.env.NODE_ENV = app.isPackaged ? 'production' : 'development';
