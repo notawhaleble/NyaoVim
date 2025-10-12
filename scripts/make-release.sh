@@ -20,7 +20,8 @@ function prepare-app() {
     npm run build
 
     cp -R bin main renderer resources runtime package.json bower.json bower_components app/
-    cd app/
+    cd app
+    ln -s ../neovim-component neovim-component
 
     npm install --production --no-package-lock
     npm uninstall electron --production --no-package-lock
@@ -61,5 +62,6 @@ function make-dist() {
 export PATH=$(pwd)/node_modules/.bin:$PATH
 
 prepare-app
+rm -rf NyaoVim-*
 pack-app
 make-dist
