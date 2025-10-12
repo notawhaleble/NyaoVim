@@ -20,12 +20,16 @@ function prepare-app() {
     npm run build
 
     cp -R bin main renderer resources runtime package.json bower.json bower_components app/
+    mkdir -p app/neovim-component
+    cp -R ../neovim-component/build app/neovim-component/
+    cp ../neovim-component/neovim-editor.html app/neovim-component/
+    cp ../neovim-component/package.json app/neovim-component/
     cd app
-    ln -s ../neovim-component neovim-component
 
     npm install --production --no-package-lock
     npm uninstall electron --production --no-package-lock
     npm prune --production --no-package-lock
+    rm -rf neovim-component/node_modules neovim-component/build/test neovim-component/build/src/*.map neovim-component/build/*.map neovim-component/build/src/log.js.map neovim-component/build/src/neovim/*.map
     cd -
 }
 
