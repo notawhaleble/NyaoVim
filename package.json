@@ -50,7 +50,7 @@
     "electron": "^25.8.5",
     "electron-window-state": "^5.0.3",
     "mkdirp": "^0.5.1",
-    "neovim-component": "^0.10.1",
+    "neovim-component": "file:../neovim-component",
     "promised-neovim-client": "^2.0.2",
     "@electron/remote": "^2.0.9"
   },

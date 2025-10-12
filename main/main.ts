@@ -14,7 +14,6 @@ const GPU_SWITCHES: Array<[string, string | undefined]> = [
     ['enable-oop-rasterization', undefined],
     ['enable-accelerated-2d-canvas', undefined],
     ['enable-features', 'CanvasOopRasterization,Canvas2DLayers,UseSkiaRenderer'],
-    ['use-gl', 'desktop'],
 ];
 GPU_SWITCHES.forEach(([name, value]) => {
     if (value !== undefined) {
