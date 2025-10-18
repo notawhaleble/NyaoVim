@@ -1,9 +1,30 @@
 import {NeovimElement, Neovim} from 'neovim-component';
 import {shell, ipcRenderer as ipc, clipboard} from 'electron';
-import remote = require('@electron/remote');
 import {join, basename} from 'path';
 import {readdirSync} from 'fs';
 import {Nvim, RPCValue} from 'promised-neovim-client';
+
+const getProcessArgv = (): string[] => ipc.sendSync('nyaovim:get-process-argv') as string[];
+const getAppVersion = (): string => ipc.sendSync('nyaovim:get-app-version') as string;
+const invokeMain = <T = unknown>(channel: string, ...args: unknown[]) =>
+    ipc.invoke(channel, ...(args as unknown[])) as Promise<T>;
+
+const pendingOpenFiles: string[] = [];
+let activeClient: Nvim | null = null;
+
+ipc.on('nyaovim:open-file', (_event, filePath: string) => {
+    if (activeClient) {
+        activeClient.command('edit! ' + filePath);
+    } else {
+        pendingOpenFiles.push(filePath);
+    }
+});
+
+ipc.send('nyaovim:renderer-ready');
+window.addEventListener('beforeunload', () => {
+    ipc.send('nyaovim:renderer-detached');
+    activeClient = null;
+});
 
 class ComponentLoader {
     initially_loaded: boolean;
@@ -75,9 +96,7 @@ class RuntimeApi {
         return func.apply(func, args);
     }
 }
-
 const component_loader = new ComponentLoader();
-const ThisBrowserWindow = remote.getCurrentWindow();
 const runtime_api = new RuntimeApi({
     'nyaovim:load-path': (html_path: string) => {
         component_loader.loadComponent(html_path);
@@ -86,8 +105,8 @@ const runtime_api = new RuntimeApi({
         component_loader.loadPluginDir(dir_path);
     },
     'nyaovim:edit-start': (file_path: string) => {
-        ThisBrowserWindow.setRepresentedFilename(file_path);
-        remote.app.addRecentDocument(file_path);
+        invokeMain('nyaovim:set-represented-filename', file_path).catch((): void => undefined);
+        invokeMain('nyaovim:add-recent-document', file_path).catch((): void => undefined);
     },
     'nyaovim:require-script-file': (script_path: string) => {
         require(script_path);
@@ -99,8 +118,9 @@ const runtime_api = new RuntimeApi({
         }
     },
     'nyaovim:open-devtools': (mode: 'right' | 'bottom' | 'undocked' | 'detach') => {
-        const contents = remote.getCurrentWebContents();
-        contents.openDevTools({mode});
+        invokeMain('nyaovim:open-devtools', mode).catch(err => {
+            console.error('Failed to open devtools via IPC:', err);
+        });
     },
     'nyaovim:execute-javascript': (code: string) => {
         if (typeof code !== 'string') {
@@ -116,11 +136,9 @@ const runtime_api = new RuntimeApi({
         }
     },
     'nyaovim:browser-window': (method: string, args: RPCValue[]) => {
-        try {
-            (ThisBrowserWindow as any)[method].apply(ThisBrowserWindow, args);
-        } catch (e) {
+        invokeMain('nyaovim:browser-window', method, args).catch(e => {
             console.error("Error while executing 'nyaovim:browser-window':", e, ' Method:', method, ' Args:', args);
-        }
+        });
     },
 });
 
@@ -234,8 +252,10 @@ class NyaoVimApp extends Polymer.Element {
                     // The first argument of standalone distribution is the binary path
                     let electron_argc =  1;
 
+                    const processArgv = getProcessArgv();
+
                     // When application is executed via 'electron' ('Electron' on darwin) executable.
-                    if ('electron' === basename(remote.process.argv[0]).toLowerCase()) {
+                    if (processArgv.length > 0 && 'electron' === basename(processArgv[0]).toLowerCase()) {
                         // Note:
                         // The first argument is a path to Electron executable.
                         // The second argument is the path to main.js
@@ -247,10 +267,11 @@ class NyaoVimApp extends Polymer.Element {
                     // XXX:
                     // Spectron additionally passes many specific arguments to process and 'nvim' process
                     // will fail because of them.  As a workaround, we stupidly ignore arguments on E2E tests.
-                    const a = process.env.NYAOVIM_E2E_TEST_RUNNING ? [] : remote.process.argv.slice(electron_argc);
+                    const a = process.env.NYAOVIM_E2E_TEST_RUNNING ? [] : processArgv.slice(electron_argc);
+                    const appVersion = getAppVersion();
 
                     a.unshift(
-                        '--cmd', `let\ g:nyaovim_version="${remote.app.getVersion()}"`,
+                        '--cmd', `let\ g:nyaovim_version="${appVersion}"`,
                         '--cmd', `set\ rtp+=${join(__dirname, '..', 'runtime').replace(' ', '\ ')}`,
                     );
 
@@ -274,7 +295,12 @@ class NyaoVimApp extends Polymer.Element {
         const element = this.$['nyaovim-editor'] as NeovimElement;
         const editor = element.editor;
         editor.on('error', (err: Error) => alert(err.message));
-        editor.on('quit', () => ThisBrowserWindow.close());
+        editor.on('quit', () => {
+            activeClient = null;
+            invokeMain('nyaovim:close-window').catch(() => {
+                window.close();
+            });
+        });
         this.editor = editor;
 
         editor.store.on('beep', () => shell.beep());
@@ -284,8 +310,14 @@ class NyaoVimApp extends Polymer.Element {
 
         editor.on('process-attached', () => {
             const client = editor.getClient();
-        let lastClipboardType: string = 'v';
-        let clipboardChannelId = 0;
+            activeClient = client;
+            if (pendingOpenFiles.length > 0) {
+                for (const filePath of pendingOpenFiles.splice(0, pendingOpenFiles.length)) {
+                    client.command('edit! ' + filePath);
+                }
+            }
+            let lastClipboardType: string = 'v';
+            let clipboardChannelId = 0;
 
 
             client.getApiInfo()
@@ -330,14 +362,10 @@ class NyaoVimApp extends Polymer.Element {
             element.addEventListener('drop', e => {
                 e.preventDefault();
                 const f = e.dataTransfer.files[0];
-                if (f) {
-                    client.command('edit! ' + f.path);
+                const filePath = (f as any)?.path;
+                if (filePath) {
+                    client.command('edit! ' + filePath);
                 }
-            });
-
-            remote.app.on('open-file', (e: Event, p: string) => {
-                e.preventDefault();
-                client.command('edit! ' + p);
             });
 
             prepareIpc(client);

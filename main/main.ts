@@ -1,13 +1,12 @@
 import {join} from 'path';
 import {stat, writeFileSync} from 'fs';
-import {app, BrowserWindow, shell, nativeImage} from 'electron';
+import {app, BrowserWindow, shell, nativeImage, ipcMain} from 'electron';
 import {sync as mkdirpSync} from 'mkdirp';
 import setMenu from './menu';
 import BrowserConfig from './browser-config';
 import {nyaoGlobal} from './global-state';
-import {initialize as initializeRemote, enable as enableRemote} from '@electron/remote/main';
+import type {BrowserWindowConstructorOptions, WebContents} from 'electron';
 
-initializeRemote();
 const GPU_SWITCHES: Array<[string, string | undefined]> = [
     ['enable-gpu-rasterization', undefined],
     ['enable-zero-copy', undefined],
@@ -60,6 +59,10 @@ const config_dir_name =
         process.platform !== 'darwin' ?
             app.getPath('appData') :
             process.env.XDG_CONFIG_HOME || join(process.env.HOME, '.config');
+
+const pendingOpenFiles: string[] = [];
+let rendererContents: WebContents | null = null;
+let appReady = false;
 
 nyaoGlobal.config_dir_path = join(config_dir_name, 'nyaovim');
 nyaoGlobal.nyaovimrc_path = join(nyaoGlobal.config_dir_path, 'nyaovimrc.html');
@@ -114,26 +117,100 @@ const prepare_browser_config
     = browser_config.loadFrom(nyaoGlobal.config_dir_path)
         .catch(err => console.error(err));
 
+ipcMain.on('nyaovim:get-global', (event, key: string) => {
+    if (key === 'nyaovimrc_path') {
+        event.returnValue = nyaoGlobal.nyaovimrc_path;
+        return;
+    }
+    event.returnValue = undefined;
+});
+
+ipcMain.on('nyaovim:get-process-argv', event => {
+    event.returnValue = process.argv.slice();
+});
+
+ipcMain.on('nyaovim:get-app-version', event => {
+    event.returnValue = app.getVersion();
+});
+
+ipcMain.handle('nyaovim:set-represented-filename', (event, filePath: string) => {
+    if (process.platform !== 'darwin' || !filePath) {
+        return false;
+    }
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win && typeof win.setRepresentedFilename === 'function') {
+        win.setRepresentedFilename(filePath);
+        return true;
+    }
+    return false;
+});
+
+ipcMain.handle('nyaovim:add-recent-document', (_event, filePath: string) => {
+    if (filePath && typeof app.addRecentDocument === 'function') {
+        app.addRecentDocument(filePath);
+    }
+});
+
+ipcMain.handle('nyaovim:open-devtools', (event, mode: Electron.OpenDevToolsOptions['mode']) => {
+    try {
+        event.sender.openDevTools({mode});
+    } catch (err) {
+        console.error('Failed to open devtools:', err);
+    }
+});
+
+ipcMain.handle('nyaovim:browser-window', (event, method: string, args: unknown[] = []) => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win && typeof (win as any)[method] === 'function') {
+        return (win as any)[method](...(Array.isArray(args) ? args : []));
+    }
+    throw new Error(`Unsupported BrowserWindow method '${method}'`);
+});
+
+ipcMain.handle('nyaovim:close-window', event => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    if (win) {
+        win.close();
+    }
+});
+
+ipcMain.on('neovim:get-node-env', event => {
+    event.returnValue = process.env.NODE_ENV || 'production';
+});
+
+ipcMain.on('nyaovim:renderer-ready', event => {
+    rendererContents = event.sender;
+    if (pendingOpenFiles.length > 0) {
+        for (const file of pendingOpenFiles.splice(0, pendingOpenFiles.length)) {
+            rendererContents.send('nyaovim:open-file', file);
+        }
+    }
+});
+
+ipcMain.on('nyaovim:renderer-detached', event => {
+    if (rendererContents === event.sender) {
+        rendererContents = null;
+    }
+});
+
 function startMainWindow() {
     const index_html = 'file://' + join(__dirname, '..', 'renderer', 'main.html');
 
-    const default_config = {
+    const default_config: BrowserWindowConstructorOptions = {
         width: 800,
         height: 600,
         useContentSize: true,
         webPreferences: {
-            blinkFeatures: 'KeyboardEventKey,Accelerated2dCanvas,Canvas2dFixedRenderingMode',
             contextIsolation: false,
             nodeIntegration: true,
             webviewTag: true,
         },
         icon: nativeImage.createFromPath(join(__dirname, '..', 'resources', 'icon', 'nyaovim-logo.png')),
-    } as Electron.BrowserWindowConstructorOptions;
+    };
 
     const user_config = browser_config.applyToOptions(default_config);
 
     let win = new BrowserWindow(user_config);
-    enableRemote(win.webContents);
 
     const already_exists = browser_config.configSingletonWindow(win);
     if (already_exists) {
@@ -146,7 +223,11 @@ function startMainWindow() {
         win.setMenuBarVisibility(false);
     }
 
+    const windowContents = win.webContents;
     win.once('closed', function() {
+        if (rendererContents === windowContents) {
+            rendererContents = null;
+        }
         win = null;
     });
 
@@ -169,13 +250,31 @@ app.once('will-finish-launching', function() {
         // open-file event might be sent before ready event is emitted
         // put it in argv to let nyaovim-app to pick it up later
         process.argv.push(p);
+        if (!pendingOpenFiles.includes(p)) {
+            pendingOpenFiles.push(p);
+        }
         e.preventDefault();
     });
+});
+
+app.on('open-file', (e: Event, p: string) => {
+    e.preventDefault();
+    if (!pendingOpenFiles.includes(p)) {
+        pendingOpenFiles.push(p);
+    }
+    if (appReady && rendererContents) {
+        rendererContents.send('nyaovim:open-file', p);
+        const index = pendingOpenFiles.indexOf(p);
+        if (index !== -1) {
+            pendingOpenFiles.splice(index, 1);
+        }
+    }
 });
 
 app.once(
     'ready',
     () => {
+        appReady = true;
         if (process.platform === 'darwin' && is_run_from_npm_package_on_darwin) {
             // XXX:
             // app.dock.setIcon() is not defined in github-electron.d.ts yet.

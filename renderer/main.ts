@@ -15,8 +15,8 @@ if (process.platform !== 'win32') {
 // at runtime when both main.js and nyaovim-app.js execute.
 
 /* tslint:disable:no-var-requires */
-const electronRemote = require('@electron/remote');
-const nyaovimrc_path: string = electronRemote.getGlobal('nyaovimrc_path');
+const {ipcRenderer} = require('electron');
+const nyaovimrc_path: string | undefined = ipcRenderer.sendSync('nyaovim:get-global', 'nyaovimrc_path');
 /* tslint:enable:no-var-requires */
 
 if (!nyaovimrc_path) {
