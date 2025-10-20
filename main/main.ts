@@ -1,6 +1,7 @@
 import {join} from 'path';
-import {stat, writeFileSync} from 'fs';
-import {app, BrowserWindow, shell, nativeImage, ipcMain} from 'electron';
+import {stat, writeFileSync, readFileSync} from 'fs';
+import {app, BrowserWindow, shell, nativeImage, ipcMain, session} from 'electron';
+import {X509Certificate} from 'crypto';
 import {sync as mkdirpSync} from 'mkdirp';
 import setMenu from './menu';
 import BrowserConfig from './browser-config';
@@ -66,6 +67,32 @@ let appReady = false;
 
 nyaoGlobal.config_dir_path = join(config_dir_name, 'nyaovim');
 nyaoGlobal.nyaovimrc_path = join(nyaoGlobal.config_dir_path, 'nyaovimrc.html');
+
+function loadCertificateFingerprints(bundlePath: string | undefined): Set<string> {
+    if (!bundlePath) {
+        return new Set();
+    }
+    try {
+        const pem = readFileSync(bundlePath, 'utf8');
+        const blocks = pem
+            .split(/(?=-----BEGIN CERTIFICATE-----)/g)
+            .map(block => block.trim())
+            .filter(block => block.length > 0);
+        const fingerprints = blocks.map(block => {
+            const cert = new X509Certificate(block);
+            return cert.fingerprint;
+        });
+        if (fingerprints.length === 0) {
+            console.warn('[nyaovim] No certificates found in bundle:', bundlePath);
+        }
+        return new Set(fingerprints);
+    } catch (err) {
+        console.error('[nyaovim] Failed to load extra CA bundle', bundlePath, err);
+        return new Set();
+    }
+}
+
+const extraCaFingerprints = loadCertificateFingerprints(process.env.NODE_EXTRA_CA_CERTS);
 
 function exists(path: string) {
     return new Promise<boolean>(resolve => {
@@ -275,6 +302,17 @@ app.once(
     'ready',
     () => {
         appReady = true;
+        if (extraCaFingerprints.size > 0) {
+            console.info('[nyaovim] Loaded extra CA fingerprints:', extraCaFingerprints.size);
+            session.defaultSession.setCertificateVerifyProc((request, callback) => {
+                const fingerprint = request.certificate?.fingerprint;
+                if (fingerprint && extraCaFingerprints.has(fingerprint)) {
+                    callback(0);
+                    return;
+                }
+                callback(-2);
+            });
+        }
         if (process.platform === 'darwin' && is_run_from_npm_package_on_darwin) {
             // XXX:
             // app.dock.setIcon() is not defined in github-electron.d.ts yet.
