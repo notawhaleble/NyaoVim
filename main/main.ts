@@ -1,12 +1,12 @@
 import {join} from 'path';
 import {stat, writeFileSync, readFileSync} from 'fs';
-import {app, BrowserWindow, shell, nativeImage, ipcMain, session} from 'electron';
+import {app, BrowserWindow, shell, nativeImage, ipcMain} from 'electron';
 import {X509Certificate} from 'crypto';
 import {sync as mkdirpSync} from 'mkdirp';
 import setMenu from './menu';
 import BrowserConfig from './browser-config';
 import {nyaoGlobal} from './global-state';
-import type {BrowserWindowConstructorOptions, WebContents} from 'electron';
+import type {BrowserWindowConstructorOptions, WebContents, Certificate} from 'electron';
 
 const GPU_SWITCHES: Array<[string, string | undefined]> = [
     ['enable-gpu-rasterization', undefined],
@@ -93,6 +93,21 @@ function loadCertificateFingerprints(bundlePath: string | undefined): Set<string
 }
 
 const extraCaFingerprints = loadCertificateFingerprints(process.env.NODE_EXTRA_CA_CERTS);
+
+function collectFingerprints(certificate: Certificate | null | undefined): string[] {
+    const fingerprints: string[] = [];
+    const seen = new Set<string>();
+    let current: Certificate | null | undefined = certificate;
+    while (current) {
+        const fp = current.fingerprint;
+        if (fp && !seen.has(fp)) {
+            fingerprints.push(fp);
+            seen.add(fp);
+        }
+        current = current.issuerCert;
+    }
+    return fingerprints;
+}
 
 function exists(path: string) {
     return new Promise<boolean>(resolve => {
@@ -304,13 +319,15 @@ app.once(
         appReady = true;
         if (extraCaFingerprints.size > 0) {
             console.info('[nyaovim] Loaded extra CA fingerprints:', extraCaFingerprints.size);
-            session.defaultSession.setCertificateVerifyProc((request, callback) => {
-                const fingerprint = request.certificate?.fingerprint;
-                if (fingerprint && extraCaFingerprints.has(fingerprint)) {
-                    callback(0);
+            app.on('certificate-error', (event, _webContents, _url, _error, certificate, callback) => {
+                const fingerprints = collectFingerprints(certificate);
+                const trusted = fingerprints.some(fp => extraCaFingerprints.has(fp));
+                if (trusted) {
+                    event.preventDefault();
+                    callback(true);
                     return;
                 }
-                callback(-2);
+                callback(false);
             });
         }
         if (process.platform === 'darwin' && is_run_from_npm_package_on_darwin) {
