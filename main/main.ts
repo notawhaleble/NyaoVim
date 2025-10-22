@@ -1,6 +1,6 @@
 import {join} from 'path';
 import {stat, writeFileSync, readFileSync} from 'fs';
-import {app, BrowserWindow, shell, nativeImage, ipcMain} from 'electron';
+import {app, BrowserWindow, shell, nativeImage, ipcMain, session, desktopCapturer} from 'electron';
 import {X509Certificate} from 'crypto';
 import {sync as mkdirpSync} from 'mkdirp';
 import setMenu from './menu';
@@ -317,6 +317,48 @@ app.once(
     'ready',
     () => {
         appReady = true;
+        const captureSession = session.defaultSession;
+        if (captureSession) {
+            captureSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
+                if (permission === 'display-capture') {
+                    callback(true);
+                    return;
+                }
+                if (
+                    permission === 'media' &&
+                    details &&
+                    typeof details === 'object' &&
+                    'mediaTypes' in details &&
+                    Array.isArray((details as {mediaTypes?: Array<'video' | 'audio'>}).mediaTypes)
+                ) {
+                    const mediaTypes = (details as {mediaTypes?: Array<'video' | 'audio'>}).mediaTypes || [];
+                    if (mediaTypes.includes('video')) {
+                        callback(true);
+                        return;
+                    }
+                }
+                callback(false);
+            });
+            captureSession.setDisplayMediaRequestHandler(async (request, callback) => {
+                try {
+                    const sources = await desktopCapturer.getSources({types: ['screen', 'window']});
+                    const preferredSource =
+                        sources.find(source => source.id.startsWith('screen:')) || sources[0];
+                    if (!preferredSource) {
+                        callback({});
+                        return;
+                    }
+                    callback({
+                        video: {id: preferredSource.id, name: preferredSource.name},
+                        audio: request.audioRequested ? 'loopback' : undefined,
+                    });
+                } catch (err) {
+                    const message = err instanceof Error ? err.message : String(err);
+                    console.error('[nyaovim] Failed to fulfill display media request:', message);
+                    callback({});
+                }
+            });
+        }
         if (extraCaFingerprints.size > 0) {
             console.info('[nyaovim] Loaded extra CA fingerprints:', extraCaFingerprints.size);
             app.on('certificate-error', (event, _webContents, _url, _error, certificate, callback) => {
