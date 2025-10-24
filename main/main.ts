@@ -6,7 +6,7 @@ import {sync as mkdirpSync} from 'mkdirp';
 import setMenu from './menu';
 import BrowserConfig from './browser-config';
 import {nyaoGlobal} from './global-state';
-import type {BrowserWindowConstructorOptions, WebContents, Certificate} from 'electron';
+import type {BrowserWindowConstructorOptions, WebContents, Certificate, Session} from 'electron';
 
 const GPU_SWITCHES: Array<[string, string | undefined]> = [
     ['enable-gpu-rasterization', undefined],
@@ -14,6 +14,7 @@ const GPU_SWITCHES: Array<[string, string | undefined]> = [
     ['enable-oop-rasterization', undefined],
     ['enable-accelerated-2d-canvas', undefined],
     ['enable-features', 'CanvasOopRasterization,Canvas2DLayers,UseSkiaRenderer'],
+    ['disable-features', 'PostQuantumKyber,PostQuantumKyberWithoutPqkeyMaterial'],
 ];
 GPU_SWITCHES.forEach(([name, value]) => {
     if (value !== undefined) {
@@ -64,6 +65,79 @@ const config_dir_name =
 const pendingOpenFiles: string[] = [];
 let rendererContents: WebContents | null = null;
 let appReady = false;
+
+const configuredCaptureSessions = new WeakSet<Session>();
+
+type MediaPermissionDetails = {
+    mediaTypes?: Array<'video' | 'audio'>;
+    requestingUrl?: string;
+    securityOrigin?: string;
+};
+
+function configureCaptureSession(targetSession: Session) {
+    if (configuredCaptureSessions.has(targetSession)) {
+        return;
+    }
+    configuredCaptureSessions.add(targetSession);
+    targetSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
+        console.info('[nyaovim] Permission request', {
+            permission,
+            details,
+        });
+        if (permission === 'display-capture') {
+            callback(true);
+            return;
+        }
+        if (permission === 'media') {
+            const mediaDetails =
+                details && typeof details === 'object' ?
+                    details as MediaPermissionDetails :
+                    undefined;
+            const mediaTypes = Array.isArray(mediaDetails?.mediaTypes) ? mediaDetails?.mediaTypes : [];
+            if (mediaTypes.length === 0) {
+                console.info('[nyaovim] Allowing media request with unspecified types');
+                callback(true);
+                return;
+            }
+            const allowsCapture = mediaTypes.some(type => type === 'video' || type === 'audio');
+            if (allowsCapture) {
+                console.info('[nyaovim] Allowing media request', {mediaTypes});
+                callback(true);
+                return;
+            }
+        }
+        callback(false);
+    });
+    targetSession.setDisplayMediaRequestHandler(async (request, callback) => {
+        console.info('[nyaovim] Display media request', {
+            audioRequested: request.audioRequested,
+            videoRequested: request.videoRequested,
+            userGesture: request.userGesture,
+        });
+        try {
+            const sources = await desktopCapturer.getSources({types: ['screen', 'window']});
+            console.info('[nyaovim] Available display media sources', sources.map(source => ({
+                id: source.id,
+                name: source.name,
+            })));
+            const preferredSource =
+                sources.find(source => source.id.startsWith('screen:')) || sources[0];
+            if (!preferredSource) {
+                console.warn('[nyaovim] No display media sources available');
+                callback({});
+                return;
+            }
+            callback({
+                video: {id: preferredSource.id, name: preferredSource.name},
+                audio: request.audioRequested ? 'loopback' : undefined,
+            });
+        } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            console.error('[nyaovim] Failed to fulfill display media request:', message);
+            callback({});
+        }
+    });
+}
 
 nyaoGlobal.config_dir_path = join(config_dir_name, 'nyaovim');
 nyaoGlobal.nyaovimrc_path = join(nyaoGlobal.config_dir_path, 'nyaovimrc.html');
@@ -319,46 +393,14 @@ app.once(
         appReady = true;
         const captureSession = session.defaultSession;
         if (captureSession) {
-            captureSession.setPermissionRequestHandler((_webContents, permission, callback, details) => {
-                if (permission === 'display-capture') {
-                    callback(true);
-                    return;
-                }
-                if (
-                    permission === 'media' &&
-                    details &&
-                    typeof details === 'object' &&
-                    'mediaTypes' in details &&
-                    Array.isArray((details as {mediaTypes?: Array<'video' | 'audio'>}).mediaTypes)
-                ) {
-                    const mediaTypes = (details as {mediaTypes?: Array<'video' | 'audio'>}).mediaTypes || [];
-                    if (mediaTypes.includes('video')) {
-                        callback(true);
-                        return;
-                    }
-                }
-                callback(false);
-            });
-            captureSession.setDisplayMediaRequestHandler(async (request, callback) => {
-                try {
-                    const sources = await desktopCapturer.getSources({types: ['screen', 'window']});
-                    const preferredSource =
-                        sources.find(source => source.id.startsWith('screen:')) || sources[0];
-                    if (!preferredSource) {
-                        callback({});
-                        return;
-                    }
-                    callback({
-                        video: {id: preferredSource.id, name: preferredSource.name},
-                        audio: request.audioRequested ? 'loopback' : undefined,
-                    });
-                } catch (err) {
-                    const message = err instanceof Error ? err.message : String(err);
-                    console.error('[nyaovim] Failed to fulfill display media request:', message);
-                    callback({});
-                }
-            });
+            configureCaptureSession(captureSession);
         }
+        app.on('web-contents-created', (_event, contents) => {
+            const targetSession = contents.session;
+            if (targetSession) {
+                configureCaptureSession(targetSession);
+            }
+        });
         if (extraCaFingerprints.size > 0) {
             console.info('[nyaovim] Loaded extra CA fingerprints:', extraCaFingerprints.size);
             app.on('certificate-error', (event, _webContents, _url, _error, certificate, callback) => {
