@@ -24,6 +24,11 @@ GPU_SWITCHES.forEach(([name, value]) => {
     }
 });
 
+const SPOOFED_USER_AGENT =
+    'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.7339.240 Safari/537.36';
+
+app.userAgentFallback = SPOOFED_USER_AGENT;
+
 if (!process.env.NODE_ENV) {
     process.env.NODE_ENV = app.isPackaged ? 'production' : 'development';
 }
@@ -166,7 +171,8 @@ function loadCertificateFingerprints(bundlePath: string | undefined): Set<string
     }
 }
 
-const extraCaFingerprints = loadCertificateFingerprints(process.env.NODE_EXTRA_CA_CERTS);
+const extraCaBundlePath = process.env.NODE_EXTRA_CA_CERTS || process.env.ELECTRON_EXTRA_CA_CERTS;
+const extraCaFingerprints = loadCertificateFingerprints(extraCaBundlePath);
 
 function collectFingerprints(certificate: Certificate | null | undefined): string[] {
     const fingerprints: string[] = [];
@@ -393,12 +399,46 @@ app.once(
         appReady = true;
         const captureSession = session.defaultSession;
         if (captureSession) {
+            captureSession.setUserAgent(SPOOFED_USER_AGENT);
             configureCaptureSession(captureSession);
+            if (extraCaFingerprints.size > 0) {
+                captureSession.setCertificateVerifyProc((request, callback) => {
+                    const withVerified = request as typeof request & {verifiedCertificate?: Certificate};
+                    const source = withVerified.verifiedCertificate || request.certificate;
+                    const chain = collectFingerprints(source);
+                    const trusted = chain.some(fp => extraCaFingerprints.has(fp));
+                    if (trusted) {
+                        console.info('[nyaovim] Allowing certificate via extra CA bundle for', request.hostname);
+                        callback(0);
+                        return;
+                    }
+                    callback(-2);
+                });
+            }
         }
         app.on('web-contents-created', (_event, contents) => {
             const targetSession = contents.session;
             if (targetSession) {
+                try {
+                    targetSession.setUserAgent(SPOOFED_USER_AGENT);
+                } catch (err) {
+                    console.warn('[nyaovim] Failed to set user agent for session', err);
+                }
                 configureCaptureSession(targetSession);
+                if (extraCaFingerprints.size > 0) {
+                    targetSession.setCertificateVerifyProc((request, callback) => {
+                        const withVerified = request as typeof request & {verifiedCertificate?: Certificate};
+                        const source = withVerified.verifiedCertificate || request.certificate;
+                        const chain = collectFingerprints(source);
+                        const trusted = chain.some(fp => extraCaFingerprints.has(fp));
+                        if (trusted) {
+                            console.info('[nyaovim] Allowing certificate via extra CA bundle for', request.hostname);
+                            callback(0);
+                            return;
+                        }
+                        callback(-2);
+                    });
+                }
             }
         });
         if (extraCaFingerprints.size > 0) {
