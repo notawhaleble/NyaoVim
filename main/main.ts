@@ -1,7 +1,7 @@
 import {join} from 'path';
-import {stat, writeFileSync, readFileSync} from 'fs';
+import {stat, writeFileSync, readFileSync, existsSync} from 'fs';
 import {app, BrowserWindow, shell, nativeImage, ipcMain, session, desktopCapturer} from 'electron';
-import {X509Certificate} from 'crypto';
+import {X509Certificate, createHash} from 'crypto';
 import {sync as mkdirpSync} from 'mkdirp';
 import setMenu from './menu';
 import BrowserConfig from './browser-config';
@@ -174,6 +174,50 @@ function loadCertificateFingerprints(bundlePath: string | undefined): Set<string
 const extraCaBundlePath = process.env.NODE_EXTRA_CA_CERTS || process.env.ELECTRON_EXTRA_CA_CERTS;
 const extraCaFingerprints = loadCertificateFingerprints(extraCaBundlePath);
 
+function splitPemBlocks(pem: string | undefined): string[] {
+    if (!pem) {
+        return [];
+    }
+    const matches = pem.match(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g);
+    return matches ? matches : [];
+}
+
+function computeSpkiPin(pemBlock: string): string | null {
+    try {
+        const cert = new X509Certificate(pemBlock);
+        const spkiDer = cert.publicKey.export({type: 'spki', format: 'der'});
+        const digest = createHash('sha256').update(spkiDer).digest('base64');
+        return `sha256/${digest}`;
+    } catch (err) {
+        console.error('[nyaovim] Failed to compute SPKI pin', err);
+        return null;
+    }
+}
+
+function loadSpkiPins(bundlePath: string | undefined): Set<string> {
+    if (!bundlePath || bundlePath.length === 0) {
+        return new Set();
+    }
+    let pem: string;
+    try {
+        pem = existsSync(bundlePath) ? readFileSync(bundlePath, 'utf8') : bundlePath;
+    } catch (err) {
+        console.error('[nyaovim] Failed to read CA bundle for SPKI pins', bundlePath, err);
+        return new Set();
+    }
+    const blocks = splitPemBlocks(pem);
+    const pins = new Set<string>();
+    for (const block of blocks) {
+        const pin = computeSpkiPin(block);
+        if (pin) {
+            pins.add(pin);
+        }
+    }
+    return pins;
+}
+
+const extraCaSpkiPins = loadSpkiPins(extraCaBundlePath);
+
 function collectFingerprints(certificate: Certificate | null | undefined): string[] {
     const fingerprints: string[] = [];
     const seen = new Set<string>();
@@ -187,6 +231,38 @@ function collectFingerprints(certificate: Certificate | null | undefined): strin
         current = current.issuerCert;
     }
     return fingerprints;
+}
+
+function normalizeSpki(value: string | undefined): string | null {
+    if (!value) {
+        return null;
+    }
+    if (value.startsWith('sha256/')) {
+        return value;
+    }
+    if (/^[A-Za-z0-9+/]+={0,2}$/.test(value) && value.length >= 16) {
+        return `sha256/${value}`;
+    }
+    return null;
+}
+
+function configureCertificateVerify(targetSession: Session) {
+    if (extraCaSpkiPins.size === 0) {
+        return;
+    }
+    targetSession.setCertificateVerifyProc((request, callback) => {
+        if (request.verificationResult === 'net::OK') {
+            callback(0);
+            return;
+        }
+        const normalized = normalizeSpki(request.certificate?.fingerprint);
+        if (normalized && extraCaSpkiPins.has(normalized)) {
+            console.info('[nyaovim] Allowing certificate via SPKI pin for', request.hostname);
+            callback(0);
+            return;
+        }
+        callback(-2);
+    });
 }
 
 function exists(path: string) {
@@ -401,20 +477,7 @@ app.once(
         if (captureSession) {
             captureSession.setUserAgent(SPOOFED_USER_AGENT);
             configureCaptureSession(captureSession);
-            if (extraCaFingerprints.size > 0) {
-                captureSession.setCertificateVerifyProc((request, callback) => {
-                    const withVerified = request as typeof request & {verifiedCertificate?: Certificate};
-                    const source = withVerified.verifiedCertificate || request.certificate;
-                    const chain = collectFingerprints(source);
-                    const trusted = chain.some(fp => extraCaFingerprints.has(fp));
-                    if (trusted) {
-                        console.info('[nyaovim] Allowing certificate via extra CA bundle for', request.hostname);
-                        callback(0);
-                        return;
-                    }
-                    callback(-2);
-                });
-            }
+            configureCertificateVerify(captureSession);
         }
         app.on('web-contents-created', (_event, contents) => {
             const targetSession = contents.session;
@@ -425,20 +488,7 @@ app.once(
                     console.warn('[nyaovim] Failed to set user agent for session', err);
                 }
                 configureCaptureSession(targetSession);
-                if (extraCaFingerprints.size > 0) {
-                    targetSession.setCertificateVerifyProc((request, callback) => {
-                        const withVerified = request as typeof request & {verifiedCertificate?: Certificate};
-                        const source = withVerified.verifiedCertificate || request.certificate;
-                        const chain = collectFingerprints(source);
-                        const trusted = chain.some(fp => extraCaFingerprints.has(fp));
-                        if (trusted) {
-                            console.info('[nyaovim] Allowing certificate via extra CA bundle for', request.hostname);
-                            callback(0);
-                            return;
-                        }
-                        callback(-2);
-                    });
-                }
+                configureCertificateVerify(targetSession);
             }
         });
         if (extraCaFingerprints.size > 0) {
