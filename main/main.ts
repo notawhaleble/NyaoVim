@@ -182,9 +182,9 @@ function splitPemBlocks(pem: string | undefined): string[] {
     return matches ? matches : [];
 }
 
-function computeSpkiPin(pemBlock: string): string | null {
+function computeSpkiPin(source: string | Buffer): string | null {
     try {
-        const cert = new X509Certificate(pemBlock);
+        const cert = new X509Certificate(source);
         const spkiDer = cert.publicKey.export({type: 'spki', format: 'der'});
         const digest = createHash('sha256').update(spkiDer).digest('base64');
         return `sha256/${digest}`;
@@ -233,19 +233,6 @@ function collectFingerprints(certificate: Certificate | null | undefined): strin
     return fingerprints;
 }
 
-function normalizeSpki(value: string | undefined): string | null {
-    if (!value) {
-        return null;
-    }
-    if (value.startsWith('sha256/')) {
-        return value;
-    }
-    if (/^[A-Za-z0-9+/]+={0,2}$/.test(value) && value.length >= 16) {
-        return `sha256/${value}`;
-    }
-    return null;
-}
-
 function configureCertificateVerify(targetSession: Session) {
     if (extraCaSpkiPins.size === 0) {
         return;
@@ -255,11 +242,18 @@ function configureCertificateVerify(targetSession: Session) {
             callback(0);
             return;
         }
-        const normalized = normalizeSpki(request.certificate?.fingerprint);
-        if (normalized && extraCaSpkiPins.has(normalized)) {
+        const data = (request.certificate as Certificate | undefined)?.data;
+        const pin = data ? computeSpkiPin(data) : null;
+        if (pin && extraCaSpkiPins.has(pin)) {
             console.info('[nyaovim] Allowing certificate via SPKI pin for', request.hostname);
             callback(0);
             return;
+        }
+        if (pin) {
+            console.debug('[nyaovim] SPKI pin mismatch', {
+                hostname: request.hostname,
+                pin,
+            });
         }
         callback(-2);
     });
